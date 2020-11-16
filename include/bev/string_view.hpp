@@ -34,7 +34,7 @@
 
 #include <type_traits>
 #include <iosfwd>
-#include <limits>
+#include <climits>
 #include <stdexcept>
 #include <string>
 
@@ -62,7 +62,7 @@ class basic_string_view
   static_assert(std::is_same_v<CharT, typename Traits::char_type>);
 
   // bitmask for accessing the `safe_nulltest` flag bit in `len_`.
-  static const size_t safederef_flag_mask = 1ull << (8*sizeof(size_t)-1);
+  static const size_t safederef_flag_mask = 1ull << (CHAR_BIT*sizeof(size_t)-1);
   static size_t set_safederef_bit(size_t x) { return x | safederef_flag_mask; }
   static size_t clear_safederef_bit(size_t x) { return x & ~safederef_flag_mask; }
   static bool test_safederef_bit(size_t x) { return x & safederef_flag_mask; }
@@ -432,10 +432,10 @@ private:
   s_compare(size_type n1, size_type n2) noexcept
   {
     const difference_type diff = n1 - n2;
-    if (diff > std::numeric_limits<int>::max())
-      return std::numeric_limits<int>::max();
-    if (diff < std::numeric_limits<int>::min())
-      return std::numeric_limits<int>::min();
+    if (diff > INT_MAX)
+      return INT_MAX;
+    if (diff < INT_MIN)
+      return INT_MIN;
     return static_cast<int>(diff);
   }
 
