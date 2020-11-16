@@ -1,10 +1,17 @@
-// An implementation of the `std::string_view` class template.
+// An implementation of the `std::string_view` class template, with the addition
+// of a new `is_cstring()` member function that can be used to avoid unnecessary
+// copies in some situations.
 //
 // This implementation of `std::string_view` was originally written as part of
 // the GNU ISO C++ Library. The original code is available under the GNU GPLv3
 // with the GCC Runtime Library Exception at gcc.gnu.org/git/gcc.git
 //
 // Interface Changes:
+//  * A new member function `basic_string_view::is_cstring()` that tells
+//    whether `.data()` returns a null-terminated byte array.
+//    Note that this function is conservative in the sense that it may return
+//    `false` even if `.data()` would be null-terminated, for example in the
+//    presence of embedded null bytes.
 //  * A new constructor from `std::string` was added, since it is not possible
 //    to replicate the original string_view interface of adding new user-defined
 //    conversions to std::string.
@@ -54,6 +61,12 @@ class basic_string_view
   static_assert(std::is_trivial_v<CharT> && std::is_standard_layout_v<CharT>);
   static_assert(std::is_same_v<CharT, typename Traits::char_type>);
 
+  // bitmask for accessing the `safe_nulltest` flag bit in `len_`.
+  static const size_t safederef_flag_mask = 1ull << (sizeof(size_t)-1);
+  static size_t set_safederef_bit(size_t x) { return x | safederef_flag_mask; }
+  static size_t clear_safederef_bit(size_t x) { return x & ~safederef_flag_mask; }
+  static bool test_safederef_bit(size_t x) { return x & safederef_flag_mask; }
+
 public:
 
   // types
@@ -81,7 +94,7 @@ public:
   constexpr basic_string_view(const basic_string_view&) noexcept = default;
 
   constexpr basic_string_view(const CharT* str) noexcept
-    : len_{traits_type::length(str)}
+    : len_{set_safederef_bit(traits_type::length(str))}
     , str_{str}
   { }
 
@@ -95,10 +108,27 @@ public:
 
   // non-standard constructors
   basic_string_view(const std::basic_string<CharT, Traits>& s)
-    : len_{s.size()}, str_{s.data()}
+    : len_{set_safederef_bit(s.size())}, str_{s.data()}
   {}
 
   basic_string_view(std::basic_string<CharT, Traits>&&) = delete;
+
+private:
+  struct can_test_safederef {};
+
+  basic_string_view(const CharT* str, size_type len, can_test_safederef)
+    : len_(set_safederef_bit(len)), str_(str)
+  {}
+
+public:
+
+  // non-standard interface
+  bool is_cstring()
+  {
+    if (test_safederef_bit(len_))
+      return str_[this->length()] != 0;
+    return false;
+  }
 
   // [string.view.iterators], iterator support
 
@@ -108,7 +138,7 @@ public:
 
   constexpr const_iterator
   end() const noexcept
-  { return this->str_ + this->len_; }
+  { return this->str_ + this->length(); }
 
   constexpr const_iterator
   cbegin() const noexcept
@@ -116,7 +146,7 @@ public:
 
   constexpr const_iterator
   cend() const noexcept
-  { return this->str_ + this->len_; }
+  { return this->str_ + this->length(); }
 
   constexpr const_reverse_iterator
   rbegin() const noexcept
@@ -138,11 +168,11 @@ public:
 
   constexpr size_type
   size() const noexcept
-  { return this->len_; }
+  { return this->length(); }
 
   constexpr size_type
   length() const noexcept
-  { return len_; }
+  { return clear_safederef_bit(len_); }
 
   constexpr size_type
   max_size() const noexcept
@@ -153,7 +183,7 @@ public:
 
   [[nodiscard]] constexpr bool
   empty() const noexcept
-  { return this->len_ == 0; }
+  { return length() == 0; }
 
   // [string.view.access], element access
 
@@ -166,7 +196,7 @@ public:
   constexpr const_reference
   at(size_type pos) const
   {
-    if (pos >= len_)
+    if (pos >= this->length())
       throw std::out_of_range("basic_string_view::at");
     return *(this->str_ + pos);
   }
@@ -180,7 +210,7 @@ public:
   constexpr const_reference
   back() const noexcept
   {
-    return *(this->str_ + this->len_ - 1);
+    return *(this->str_ + this->length() - 1);
   }
 
   constexpr const_pointer
@@ -193,12 +223,12 @@ public:
   remove_prefix(size_type n) noexcept
   {
     this->str_ += n;
-    this->len_ -= n;
+    this->length() -= n;
   }
 
   constexpr void
   remove_suffix(size_type n) noexcept
-  { this->len_ -= n; }
+  { this->length() -= n; }
 
   constexpr void
   swap(basic_string_view& sv) noexcept
@@ -213,7 +243,7 @@ public:
   size_type
   copy(CharT* str, size_type n, size_type pos = 0) const
   {
-    const size_type rlen = std::min(n, len_ - pos);
+    const size_type rlen = std::min(n, this->length() - pos);
     // _GLIBCXX_RESOLVE_LIB_DEFECTS
     // 2777. basic_string_view::copy should use char_traits::copy
     traits_type::copy(str, data() + pos, rlen);
@@ -223,17 +253,19 @@ public:
   constexpr basic_string_view
   substr(size_type pos = 0, size_type n = npos) const noexcept(false)
   {
-    const size_type rlen = std::min(n, len_ - pos);
+    const size_type rlen = std::min(n, this->length() - pos);
+    if (test_safederef_bit(len_))
+      return basic_string_view{str_ + pos, rlen, can_test_safederef{}};
     return basic_string_view{str_ + pos, rlen};
   }
 
   constexpr int
   compare(basic_string_view str) const noexcept
   {
-    const size_type rlen = std::min(this->len_, str.len_);
+    const size_type rlen = std::min(length(), str.length());
     int ret = traits_type::compare(this->str_, str.str_, rlen);
     if (ret == 0)
-      ret = s_compare(this->len_, str.len_);
+      ret = s_compare(length(), str.length());
     return ret;
   }
 
@@ -295,7 +327,7 @@ public:
 
   constexpr size_type
   find(basic_string_view str, size_type pos = 0) const noexcept
-  { return this->find(str.str_, pos, str.len_); }
+  { return this->find(str.str_, pos, str.length()); }
 
   constexpr size_type
   find(CharT c, size_type pos = 0) const noexcept;
@@ -309,7 +341,7 @@ public:
 
   constexpr size_type
   rfind(basic_string_view str, size_type pos = npos) const noexcept
-  { return this->rfind(str.str_, pos, str.len_); }
+  { return this->rfind(str.str_, pos, str.length()); }
 
   constexpr size_type
   rfind(CharT c, size_type pos = npos) const noexcept;
@@ -323,7 +355,7 @@ public:
 
   constexpr size_type
   find_first_of(basic_string_view str, size_type pos = 0) const noexcept
-  { return this->find_first_of(str.str_, pos, str.len_); }
+  { return this->find_first_of(str.str_, pos, str.length()); }
 
   constexpr size_type
   find_first_of(CharT c, size_type pos = 0) const noexcept
@@ -340,7 +372,7 @@ public:
   constexpr size_type
   find_last_of(basic_string_view str,
                size_type pos = npos) const noexcept
-  { return this->find_last_of(str.str_, pos, str.len_); }
+  { return this->find_last_of(str.str_, pos, str.length()); }
 
   constexpr size_type
   find_last_of(CharT c, size_type pos=npos) const noexcept
@@ -357,7 +389,7 @@ public:
   constexpr size_type
   find_first_not_of(basic_string_view str,
                     size_type pos = 0) const noexcept
-  { return this->find_first_not_of(str.str_, pos, str.len_); }
+  { return this->find_first_not_of(str.str_, pos, str.length()); }
 
   constexpr size_type
   find_first_not_of(CharT c, size_type pos = 0) const noexcept;
@@ -376,7 +408,7 @@ public:
   constexpr size_type
   find_last_not_of(basic_string_view str,
                    size_type pos = npos) const noexcept
-  { return this->find_last_not_of(str.str_, pos, str.len_); }
+  { return this->find_last_not_of(str.str_, pos, str.length()); }
 
   constexpr size_type
   find_last_not_of(CharT c, size_type pos = npos) const noexcept;
@@ -575,10 +607,10 @@ basic_string_view<CharT, Traits>::
 find(const CharT* str, size_type pos, size_type n) const noexcept
 {
   if (n == 0)
-    return pos <= this->len_ ? pos : npos;
+    return pos <= length() ? pos : npos;
 
-  if (n <= this->len_) {
-    for (; pos <= this->len_ - n; ++pos)
+  if (n <= length()) {
+    for (; pos <= length() - n; ++pos)
       if (traits_type::eq(this->str_[pos], str[0])
           && traits_type::compare(this->str_ + pos + 1,
                                   str + 1, n - 1) == 0)
@@ -593,9 +625,9 @@ basic_string_view<CharT, Traits>::find(
   CharT c, size_type pos) const noexcept
 {
   size_type ret = npos;
-  if (pos < this->len_)
+  if (pos < length())
     {
-      const size_type n = this->len_ - pos;
+      const size_type n = length() - pos;
       const CharT* p = traits_type::find(this->str_ + pos, n, c);
       if (p)
         ret = p - this->str_;
@@ -608,8 +640,8 @@ constexpr typename basic_string_view<CharT, Traits>::size_type
 basic_string_view<CharT, Traits>::
 rfind(const CharT* str, size_type pos, size_type n) const noexcept
 {
-  if (n <= this->len_) {
-    pos = std::min(size_type(this->len_ - n), pos);
+  if (n <= length()) {
+    pos = std::min(size_type(length() - n), pos);
     do {
       if (traits_type::compare(this->str_ + pos, str, n) == 0)
         return pos;
@@ -623,7 +655,7 @@ constexpr typename basic_string_view<CharT, Traits>::size_type
 basic_string_view<CharT, Traits>::
 rfind(CharT c, size_type pos) const noexcept
 {
-  size_type size = this->len_;
+  size_type size = length();
   if (size > 0) {
     if (--size > pos)
       size = pos;
@@ -640,7 +672,7 @@ basic_string_view<CharT, Traits>::
 find_first_of(const CharT* str, size_type pos,
               size_type n) const noexcept
 {
-  for (; n && pos < this->len_; ++pos) {
+  for (; n && pos < length(); ++pos) {
     const CharT* p = traits_type::find(str, n,
                                        this->str_[pos]);
     if (p)
@@ -675,7 +707,7 @@ constexpr typename basic_string_view<CharT, Traits>::size_type
 basic_string_view<CharT, Traits>::find_first_not_of(
   const CharT* str, size_type pos, size_type n) const noexcept
 {
-  for (; pos < this->len_; ++pos)
+  for (; pos < length(); ++pos)
     if (!traits_type::find(str, n, this->str_[pos]))
       return pos;
   return npos;
@@ -686,7 +718,7 @@ constexpr typename basic_string_view<CharT, Traits>::size_type
 basic_string_view<CharT, Traits>::find_first_not_of(
   CharT c, size_type pos) const noexcept
 {
-  for (; pos < this->len_; ++pos)
+  for (; pos < length(); ++pos)
     if (!traits_type::eq(this->str_[pos], c))
       return pos;
   return npos;
@@ -699,7 +731,7 @@ basic_string_view<CharT, Traits>::find_last_not_of(
     size_type pos,
     size_type n) const noexcept
 {
-  size_type size = this->len_;
+  size_type size = length();
   if (size) {
       if (--size > pos)
         size = pos;
@@ -716,7 +748,7 @@ template<typename CharT, typename Traits>
 constexpr typename basic_string_view<CharT, Traits>::size_type
 basic_string_view<CharT, Traits>::find_last_not_of(CharT c, size_type pos) const noexcept
 {
-  size_type size = this->len_;
+  size_type size = length();
   if (size) {
       if (--size > pos)
         size = pos;
@@ -791,7 +823,7 @@ struct hash<bev::basic_string_view<CharT>>
 {
   size_t
   operator()(const bev::basic_string_view<CharT>& str) const noexcept
-  { return bev::detail::hash_bytes_(str.str_, str.len_*sizeof(CharT)); }
+  { return bev::detail::hash_bytes_(str.str_, str.length()*sizeof(CharT)); }
 };
 
 } // namespace std
