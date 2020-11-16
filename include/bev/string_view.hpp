@@ -61,7 +61,7 @@ class basic_string_view
   static_assert(std::is_trivial_v<CharT> && std::is_standard_layout_v<CharT>);
   static_assert(std::is_same_v<CharT, typename Traits::char_type>);
 
-  // bitmask for accessing the `safe_nulltest` flag bit in `len_`.
+  // bitmask for accessing the `safederef` flag bit in `len_`.
   static const size_t safederef_flag_mask = 1ull << (CHAR_BIT*sizeof(size_t)-1);
   static size_t set_safederef_bit(size_t x) { return x | safederef_flag_mask; }
   static size_t clear_safederef_bit(size_t x) { return x & ~safederef_flag_mask; }
