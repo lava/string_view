@@ -114,7 +114,7 @@ After all this exposition the actual code is embarassingly simple:
     bool string_view::is_cstring()
     {
       if (test_safederef_flag(len_))
-        return str_[this->length()] != 0;
+        return str_[this->length()] == 0;
       return false;
     }
 
