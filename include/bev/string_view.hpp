@@ -62,7 +62,7 @@ class basic_string_view
   static_assert(std::is_same_v<CharT, typename Traits::char_type>);
 
   // bitmask for accessing the `safe_nulltest` flag bit in `len_`.
-  static const size_t safederef_flag_mask = 1ull << (sizeof(size_t)-1);
+  static const size_t safederef_flag_mask = 1ull << (8*sizeof(size_t)-1);
   static size_t set_safederef_bit(size_t x) { return x | safederef_flag_mask; }
   static size_t clear_safederef_bit(size_t x) { return x & ~safederef_flag_mask; }
   static bool test_safederef_bit(size_t x) { return x & safederef_flag_mask; }
@@ -126,7 +126,7 @@ public:
   bool is_cstring()
   {
     if (test_safederef_bit(len_))
-      return str_[this->length()] != 0;
+      return str_[this->length()] == CharT{0};
     return false;
   }
 
